@@ -1,21 +1,40 @@
-use super::http_tokenlize::get_id;
-use book_collection_error::*;
+use super::http_tokenlize::get_method;
+use json;
 use mysql as my;
-pub mod book_collection_error {
-    #[derive(Debug)]
-    pub struct BookAddError {
-        pub e: String,
-    }
-    #[derive(Debug)]
-    pub struct CollectBookError {
-        pub e: String,
-    }
-    #[derive(Debug)]
-    pub struct UserAddError;
+use std::fmt;
 
-    #[derive(Debug, PartialOrd, PartialEq)]
-    pub struct CannotLocateBook {
-        pub e: String,
+#[derive(Debug, PartialOrd, PartialEq)]
+pub enum BookCollectionError {
+    BookAddError(String),
+    CollectBookError(String),
+    UserAddError(String),
+    BookLocateError(String),
+    BookListLoadError(String),
+}
+
+type Result<T> = std::result::Result<T, BookCollectionError>;
+
+struct JsonList(Vec<json::JsonValue>);
+
+impl fmt::Display for JsonList {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{{{}}}", self.get());
+        Ok(())
+    }
+}
+
+impl JsonList {
+    pub fn get(&self) -> String {
+        let mut s = String::new();
+
+        for v in &self.0 {
+            s = format!("{}, {}", s, v);
+        }
+
+        s.remove(0);
+        s.remove(0);
+
+        s
     }
 }
 
@@ -33,12 +52,28 @@ pub struct Book {
     title: String,
     author: String,
     url: String,
+    image_url: String,
 }
+
+impl Book {
+    pub fn to_json(&self) -> json::JsonValue {
+        let object = json::object! {
+            "title" => self.title.clone(),
+            "author" => self.author.clone(),
+            "bid" => self.bid,
+            "image_url" => self.image_url.clone()
+        };
+
+        object
+    }
+}
+
 pub struct BookBuilder {
     bid: i32,
     title: String,
     author: String,
     url: String,
+    image_url: String,
 }
 
 impl BookBuilder {
@@ -48,6 +83,8 @@ impl BookBuilder {
             title: "".to_string(),
             author: "".to_string(),
             url: "".to_string(),
+            image_url: "http://a1.att.hudong.com/64/42/01300000602809125714424690146.jpg"
+                .to_string(),
         }
     }
 
@@ -77,6 +114,7 @@ impl BookBuilder {
             title: self.title.clone(),
             author: self.author.clone(),
             url: self.url.clone(),
+            image_url: self.image_url.clone(),
         }
     }
 }
@@ -117,7 +155,7 @@ pub fn database_init() -> my::Pool {
     _my
 }
 
-pub fn add_book(book: &Book, pool: &mysql::Pool) -> Result<(), BookAddError> {
+pub fn add_book(book: &Book, pool: &mysql::Pool) -> Result<()> {
     for mut stmt in pool
         .prepare(
             r"INSERT INTO Books
@@ -137,7 +175,7 @@ pub fn add_book(book: &Book, pool: &mysql::Pool) -> Result<(), BookAddError> {
     Ok(())
 }
 
-pub fn add_user(uid: i32, pool: &mysql::Pool) -> Result<(), UserAddError> {
+pub fn add_user(uid: i32, pool: &mysql::Pool) -> Result<()> {
     for mut stmt in pool
         .prepare(
             r"INSERT INTO Users
@@ -155,7 +193,7 @@ pub fn add_user(uid: i32, pool: &mysql::Pool) -> Result<(), UserAddError> {
     Ok(())
 }
 
-pub fn collect(uid: i32, bid: i32, pool: &mysql::Pool) -> Result<(), CollectBookError> {
+pub fn collect(uid: i32, bid: i32, pool: &mysql::Pool) -> Result<()> {
     let records: Vec<Collect> = pool
         .prep_exec(
             "SELECT uid, bid FROM Collects WHERE uid = :uid",
@@ -175,9 +213,9 @@ pub fn collect(uid: i32, bid: i32, pool: &mysql::Pool) -> Result<(), CollectBook
 
     for row in records {
         if row.bid == bid {
-            return Err(CollectBookError {
-                e: "The book has already collected.".to_string(),
-            });
+            return Err(BookCollectionError::CollectBookError(
+                "The book has already collected.".to_string(),
+            ));
         }
     }
 
@@ -186,7 +224,7 @@ pub fn collect(uid: i32, bid: i32, pool: &mysql::Pool) -> Result<(), CollectBook
             r"INSERT INTO Collects
                         (uid, bid)
                    VALUES
-                        (:uid, :bid",
+                        (:uid, :bid)",
         )
         .into_iter()
     {
@@ -199,7 +237,7 @@ pub fn collect(uid: i32, bid: i32, pool: &mysql::Pool) -> Result<(), CollectBook
     Ok(())
 }
 
-pub fn find_book(bid: i32, pool: &mysql::Pool) -> Result<String, CannotLocateBook> {
+pub fn find_book(bid: i32, pool: &mysql::Pool) -> Result<String> {
     let mut urls: Vec<String> = pool
         .prep_exec(
             "SELECT url FROM Books WHERE bid = :bid",
@@ -218,10 +256,54 @@ pub fn find_book(bid: i32, pool: &mysql::Pool) -> Result<String, CannotLocateBoo
         .unwrap();
 
     if urls.len() != 1 {
-        return Err(CannotLocateBook {
-            e: format!("Cannot locate the book:{}.", bid),
-        });
+        return Err(BookCollectionError::BookLocateError(format!(
+            "Cannot locate the book:{}.",
+            bid
+        )));
     } else {
         return Ok(urls.pop().unwrap());
+    }
+}
+
+pub fn parse_book(stem: String) -> String {
+    let path = stem
+        .split('=')
+        .filter(|c| c.len() > 0)
+        .map(|s| s.to_string())
+        .collect::<Vec<String>>();
+    assert!(path.len() == 2);
+    let pool = database_init();
+    let bid = path[0].parse::<i32>().unwrap();
+    let mut book_path = find_book(bid, &pool).unwrap();
+    book_path += &path[1];
+
+    book_path
+}
+
+pub fn get_booklist(pool: &mysql::Pool) -> Result<String> {
+    let result = pool
+        .prep_exec("SELECT bid, title, author FROM Books", ())
+        .map(|res| {
+            res.map(|x| x.unwrap())
+                .map(|row| {
+                    let (bid, title, author): (i32, String, String) = my::from_row(row);
+                    BookBuilder::new()
+                        .bid(bid)
+                        .title(title.as_str())
+                        .author(author.as_str())
+                        .build()
+                        .to_json()
+                })
+                .collect()
+        })
+        .unwrap();
+
+    let result = JsonList(result);
+
+    match result.0.is_empty() {
+        false => Ok(format!("{}", result)),
+        true => Err(BookCollectionError::BookListLoadError(
+            "Cannot find book list".to_string(),
+        )),
     }
 }
