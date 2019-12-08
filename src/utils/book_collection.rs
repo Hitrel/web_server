@@ -265,19 +265,21 @@ pub fn find_book(bid: i32, pool: &mysql::Pool) -> Result<String> {
     }
 }
 
-pub fn parse_book(stem: String) -> String {
+pub fn parse_book(stem: String) -> Option<String> {
     let path = stem
         .split('=')
         .filter(|c| c.len() > 0)
         .map(|s| s.to_string())
         .collect::<Vec<String>>();
-    assert!(path.len() == 2);
+    if path.len() != 2 {
+        return None;
+    }
     let pool = database_init();
     let bid = path[0].parse::<i32>().unwrap();
     let mut book_path = find_book(bid, &pool).unwrap();
     book_path += &path[1];
 
-    book_path
+    Some(book_path)
 }
 
 pub fn get_booklist(pool: &mysql::Pool) -> Result<String> {

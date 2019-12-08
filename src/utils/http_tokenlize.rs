@@ -33,7 +33,7 @@ pub fn tokenize(buffer: &[u8]) -> Result<Request<()>, ()> {
         .collect();
     let (method, uri, version): (String, String, String) = match get_muv(rows[0].as_str()) {
         Some(muv) => muv,
-        None => Err(()),
+        None => return Err(()),
     };
     Ok(Request::builder()
         .method(method.as_str())
@@ -84,12 +84,15 @@ fn file_read(path: &str) -> io::Result<String> {
 pub fn get_response(stream: &mut TcpStream, _type: GetMethod) {
     let (status_line, contents) = match _type {
         GetMethod::Book(book_parse) => {
-            let book_path = parse_book(book_parse);
+            let book_path = match parse_book(book_parse) {
+                Some(str) => str,
+                None => "".to_string(),
+            };
             match fs::read_to_string(book_path) {
                 Ok(contents) => ("HTTP/1.1 200 OK\r\n\r\n", contents),
                 Err(_) => (
                     "HTTP/1.1 404 NOT FOUND\r\n\r\n",
-                    "Get Book Error李".to_string(),
+                    "Get Book Error".to_string(),
                 ),
             }
         }
